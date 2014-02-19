@@ -52,6 +52,7 @@ var fs = require('fs');
 var im = require('imagemagick');
 var async = require('async');
 
+var notifications = new Array();
 var queue = new Array();
 var locked = false;
 
@@ -86,11 +87,10 @@ function processQueueItem() {
   job = queue.shift();
   s3.client.getObject({ Bucket: job.input.bucket, Key: job.input.key }, function(err, data) {
     if (err) { console.log(err); return false; }
-
     var srcFile = 'tmp/test.jpg';
     fs.writeFile(srcFile, data.Body, function(e) {
-      
       var tasks = [];
+      notifications = new Array();
       for (var i=0; i<job.outputs.length; i++)
       {
         tasks.push(function(callback){
@@ -115,7 +115,7 @@ function processQueueItem() {
             console.log('Couldnt notify: ' + e.message);
           });
           
-          req.write(JSON.stringify(fileData));
+          req.write(JSON.stringify({ outputs: notifications, src: fileData }));
           req.end();
           console.log("Sent notification to " + job.notification);
         }
@@ -152,26 +152,32 @@ function resizeImage(srcFile, callback)
         if (err) throw err;
         fs.stat(dstFile, function(err, stats){
           if (err) throw err;
-        
-          if (output.notification)
-          {
-             var u = url.parse(output.notification);
-             var req = http.request({ hostname: u.hostname, port: u.port, path: u.path, method: 'POST' }, function(res) {
-               res.setEncoding('utf8');
-             });
-             req.on('error', function(e) {
-               console.log('Couldnt notify: ' + e.message);
-             });
-             req.write(JSON.stringify(
-               {
-                 bucket: output.bucket,
-                 key: output.key,
-                 size: stats.size
-               }
-             ));
-             req.end();
-          }
-          callback(null, output.key);
+
+          im.identify(dstFile, function(err, features){
+            var s = {
+              label: output.label,
+              bucket: output.bucket,
+              key: output.key,
+              filesize: stats.size,
+              width: features.width,
+              height: features.height,
+              data: features
+            };
+            notifications.push(s);
+            if (output.notification)
+            {
+               var u = url.parse(output.notification);
+               var req = http.request({ hostname: u.hostname, port: u.port, path: u.path, method: 'POST' }, function(res) {
+                 res.setEncoding('utf8');
+               });
+               req.on('error', function(e) {
+                 console.log('Couldnt notify: ' + e.message);
+               });
+               req.write(JSON.stringify(s));
+               req.end();
+            }
+            callback(null, output.key);
+          });
         });
       });
     });
